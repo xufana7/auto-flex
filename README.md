@@ -10,6 +10,7 @@
 - Simulation logging and a bounded repair loop.
 - Live Flex upload, execution, and status monitoring through the `opentrons` MCP server.
 - A fast path for supplied `*.py` protocols: generate a detailed experiment introduction, preserve the original file, and go directly to simulation and execution.
+- A persistent `.env` hardware profile. The first invocation discovers the Flex through MCP; later invocations reuse the cached profile.
 - A separate explicit confirmation before any real robot run. The timed plan confirmation never authorizes physical execution.
 
 ## Supported environment
@@ -127,7 +128,48 @@ disabled_tools = ["poll_error_endpoint_and_fix"]
 
 Restart Codex after changing MCP configuration.
 
-## 5. Validate the installation
+## 5. Configure the persistent Flex hardware profile
+
+The repository ships with:
+
+```dotenv
+DEFAULT_IP=169.254.224.1
+HEARD_Flex=False
+```
+
+On the first `$auto-flex` invocation, the skill reads `.env`, calls the Opentrons MCP `robot_health` tool using `DEFAULT_IP`, and saves the returned robot name, model, serial, API version, firmware version, and system version. After a successful discovery it sets:
+
+```dotenv
+HEARD_Flex=True
+```
+
+Later invocations detect this flag and skip hardware discovery. Both generated experiment documentation and generated protocols use the cached hardware profile as a compatibility constraint.
+
+Inspect the current profile:
+
+```powershell
+python (Join-Path $skillRoot 'scripts\flex_env.py') `
+  --env (Join-Path $skillRoot '.env') status
+```
+
+If the robot, controller, or hardware configuration changes, reset the cache:
+
+```powershell
+python (Join-Path $skillRoot 'scripts\flex_env.py') `
+  --env (Join-Path $skillRoot '.env') reset
+```
+
+The next skill invocation will query MCP again. To use another default robot, edit `DEFAULT_IP` before resetting or invoking the skill.
+
+`.env` may contain a robot serial number and network information after discovery. Keep the repository private and do not commit a populated `.env` to a public repository. To prevent routine local commits from including hardware-cache changes, run:
+
+```powershell
+git -C $skillRoot update-index --skip-worktree .env
+```
+
+To intentionally edit the tracked default later, first run `git -C $skillRoot update-index --no-skip-worktree .env`.
+
+## 6. Validate the installation
 
 Check that the skill is discoverable by starting a new Codex task and entering:
 
@@ -138,11 +180,12 @@ $auto-flex Create a plan that transfers 100 uL from a source plate to a destinat
 Expected behavior:
 
 1. A `YYYY-MM-DD_expNN` directory is created in the active workspace.
-2. An `exp_NN.md` plan is generated.
-3. A plan-review window shows the plan, accepts revision feedback, and displays a 30-second countdown beside the confirmation button.
-4. `protocol_NN.py` is generated only after plan confirmation.
-5. Simulation logs are saved as `simulation_NN_attempt_XX.log` until the protocol succeeds or the bounded retry limit is reached.
-6. The skill stops before physical execution unless you explicitly confirm the robot IP and protocol file.
+2. If `HEARD_Flex=False`, MCP hardware discovery succeeds and `.env` changes to `HEARD_Flex=True`.
+3. An `exp_NN.md` plan containing the detected hardware profile is generated.
+4. A plan-review window shows the plan, accepts revision feedback, and displays a 30-second countdown beside the confirmation button.
+5. `protocol_NN.py` is generated only after plan confirmation and incorporates detected hardware constraints.
+6. Simulation logs are saved as `simulation_NN_attempt_XX.log` until the protocol succeeds or the bounded retry limit is reached.
+7. The skill stops before physical execution unless you explicitly confirm the effective robot IP and protocol file.
 
 ### Validate the existing-protocol route
 
@@ -157,9 +200,10 @@ Expected behavior:
 1. The original protocol is hashed and left unchanged.
 2. A working copy is saved as `protocol_NN.py` inside the new experiment directory.
 3. `exp_NN.md` documents the experiment in detail from the request and protocol source.
-4. The plan-review dialog and protocol-generation step are skipped.
-5. Simulation and repair begin immediately on the working copy.
-6. Live execution still requires a separate explicit confirmation immediately before upload and start.
+4. The cached `.env` hardware profile is included and the supplied protocol is checked against it.
+5. The plan-review dialog and protocol-generation step are skipped.
+6. Simulation and repair begin immediately on the working copy.
+7. Live execution still requires a separate explicit confirmation immediately before upload and start.
 
 ## Usage
 
@@ -222,3 +266,4 @@ Restart Codex if `SKILL.md`, `agents/openai.yaml`, or MCP configuration changed.
 - Simulation does not validate physical setup, reagent identity, deck calibration, tip availability, or collision risks outside the simulator model.
 - Keep the Flex emergency-stop procedure available during live runs.
 - Never treat the 30-second plan timeout as permission to move hardware.
+- Reset `HEARD_Flex` whenever the robot or hardware configuration changes; stale cached hardware can invalidate compatibility assumptions.

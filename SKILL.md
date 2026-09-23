@@ -13,6 +13,7 @@ Create a traceable Flex experiment package. Route new experiment requests throug
 - Query its local BM25 index with `scripts/query_flex_docs.py`; do not load the entire document unless targeted retrieval is insufficient.
 - Use `scripts/confirm_plan.ps1` for the plan-review dialog.
 - Use `scripts/run_simulation.ps1` for every simulation attempt.
+- Use `scripts/flex_env.py` to read and update the persistent `.env` hardware profile.
 - Use the configured `opentrons` MCP server only for live robot communication.
 
 Resolve all relative resource paths from this skill directory.
@@ -26,6 +27,7 @@ Resolve all relative resource paths from this skill directory.
 - Stop after five simulation repair attempts, or after the same substantive error occurs twice. Preserve logs and ask the user for direction.
 - During a live run, do not call unrelated hardware-control tools. If the robot reports a fault, pause/stop when the API supports it, record the result, and ask the user before attempting recovery.
 - Never edit or overwrite a user-supplied protocol in place. Copy it into the experiment directory and repair only that working copy.
+- Treat `.env` hardware data as machine-specific. Do not expose the robot serial unnecessarily or commit a populated hardware profile to a public repository.
 
 ## Artifact layout
 
@@ -44,6 +46,40 @@ Never overwrite attempt logs. Use the numeric suffix returned by the initializer
 
 ## Workflow
 
+### 0. Load or discover the Flex hardware profile
+
+Perform this preflight before choosing either input route and before writing an experiment plan, experiment introduction, or protocol.
+
+1. Read the skill-root `.env` with:
+
+   ```powershell
+   python scripts/flex_env.py --env .env status
+   ```
+
+2. Use `DEFAULT_IP` as the robot IP unless the user explicitly supplies another IP.
+3. If `HEARD_Flex=True`, do not query the robot for hardware discovery again. Use the cached `.env` fields for this invocation.
+4. If `HEARD_Flex` is absent or not `True`, call the `opentrons` MCP tool `robot_health` with `DEFAULT_IP`. Parse the returned robot name, API version, firmware version, system version, robot model, and robot serial. Only after a successful response, persist them with:
+
+   ```powershell
+   python scripts/flex_env.py --env .env write-health `
+     --robot-name <name> `
+     --api-version <api-version> `
+     --firmware-version <firmware-version> `
+     --system-version <system-version> `
+     --robot-model <model> `
+     --robot-serial <serial>
+   ```
+
+   This command sets `HEARD_Flex=True` and records the UTC refresh time. Do not set the flag when the MCP call fails or returns an unusable response; report the connection problem and stop before plan or protocol generation.
+5. Accept Flex-family identifiers such as `Flex`, `OT-3`, or `OT-3 Standard`; stop only if the response identifies an OT-2 or another clearly non-Flex robot. If the response omits a field, store `Unknown` rather than inventing a value.
+6. Use the loaded hardware profile as an input to every generated `exp_NN.md` and `protocol_NN.py`:
+   - Add a **Detected Flex hardware** section to the plan or experiment introduction with the effective IP, model, software/API/firmware versions, robot name, and discovery timestamp. Include the serial only when it is operationally useful.
+   - Validate that selected pipettes, modules, labware, API features, and robot type are compatible with the detected Flex profile.
+   - Add a concise generated-code comment identifying the target model and relevant software/API versions. Do not place secrets or the robot serial in protocol source.
+   - Keep the protocol's Python Protocol API level based on the protocol documentation and supported feature requirements; do not copy the HTTP API version into `requirements["apiLevel"]`.
+
+When the robot or its hardware changes, reset discovery with `python scripts/flex_env.py --env .env reset`; the next skill invocation must query `robot_health` again.
+
 ### Choose the input route
 
 - **New protocol route:** The user describes an experiment but does not provide a Python protocol. Execute steps 1 through 4.
@@ -54,11 +90,11 @@ For the existing protocol route:
 1. Confirm that the source file exists, is readable, and declares or clearly implements an Opentrons Flex protocol. Stop if it targets OT-2 or is not an Opentrons protocol.
 2. Preserve the source file unchanged. Record its absolute source path and SHA-256 hash in `exp_NN.md`, then copy it to the experiment directory as `protocol_NN.py`. Apply all simulation-driven repairs only to this copy.
 3. Derive a detailed experiment introduction from both the user's text and the protocol code. Include purpose, protocol metadata and API level, reagents/liquids that can be inferred, labware load names and slots, pipettes and tips, modules, deck layout, source/destination well mapping, volumes, mixing and flow settings, ordered operations, runtime parameters, expected outputs, waste handling, and safety/physical setup checks. Clearly label details that cannot be inferred; do not invent them.
-4. The generated `exp_NN.md` is descriptive documentation, not a new plan requiring the 30-second approval dialog. Unless the user explicitly requests simulation only, proceed to step 4 after step 3 succeeds. Ask for a missing robot IP before live execution.
+4. The generated `exp_NN.md` is descriptive documentation, not a new plan requiring the 30-second approval dialog. Include the cached `.env` hardware profile and check the supplied protocol against it. Unless the user explicitly requests simulation only, proceed to step 4 after step 3 succeeds.
 
 ### 1. Draft and confirm the experiment plan
 
-1. Convert the user's request into `exp_NN.md`. Include objective, assumptions, samples/reagents, exact volumes and well mapping, labware load names, pipette/tips, modules, deck layout, ordered operations, mixing/flow-rate details, runtime parameters, controls, expected outputs, waste handling, and safety checks.
+1. Convert the user's request and the loaded `.env` hardware profile into `exp_NN.md`. Include the detected Flex hardware section, objective, assumptions, samples/reagents, exact volumes and well mapping, labware load names, pipette/tips, modules, deck layout, ordered operations, mixing/flow-rate details, runtime parameters, controls, expected outputs, waste handling, and safety checks.
 2. Mark any unresolved critical item as `BLOCKER` and resolve it with the user before continuing.
 3. Show the plan in the timed dialog:
 
@@ -88,7 +124,7 @@ For the existing protocol route:
    python scripts/query_flex_docs.py --index references/flex_api_index.json --top-k 5 "<focused query>"
    ```
 
-3. Generate `protocol_NN.py` from the confirmed plan and retrieved passages. Target Flex and API level 2.29 unless the user explicitly requests another supported level. Keep configuration values visible and add protocol comments at operational boundaries.
+3. Generate `protocol_NN.py` from the confirmed plan, retrieved passages, and loaded `.env` hardware profile. Target the detected Flex model and API level 2.29 unless the user explicitly requests another supported level. Keep configuration values visible, add a non-sensitive target-hardware comment, and add protocol comments at operational boundaries.
 4. Ensure the code implements the confirmed well mapping and volumes exactly. Do not silently simplify the experiment.
 
 ### 3. Simulate and repair
@@ -111,7 +147,7 @@ If `opentrons_simulate` is unavailable, run `scripts/setup_simulator.ps1` once t
 
 After the separate explicit live-run confirmation:
 
-1. Call `upload_protocol` with the confirmed robot IP and absolute `protocol_NN.py` path.
+1. Call `upload_protocol` with the confirmed effective robot IP (the user's override or `.env` `DEFAULT_IP`) and absolute `protocol_NN.py` path.
 2. Record the returned protocol ID in `live_run_NN.log`.
 3. Call `create_run` with that protocol ID; record the run ID.
 4. Call `control_run` with action `play`.
