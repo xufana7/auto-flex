@@ -1,5 +1,7 @@
 # Auto Flex
 
+[中文使用指南](README.zh-CN.md)
+
 `auto-flex` is a Codex skill that converts a natural-language experiment request into a reviewed Opentrons Flex protocol, or accepts an existing Python protocol and sends it directly through documentation, simulation, repair, and optional live execution. It uses the Opentrons MCP server for robot communication.
 
 ## What it includes
