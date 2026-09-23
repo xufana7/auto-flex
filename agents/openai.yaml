@@ -1,0 +1,11 @@
+interface:
+  display_name: "Auto Flex"
+  short_description: "Generate, simulate, and run Opentrons Flex protocols"
+  default_prompt: "Use $auto-flex to turn my experiment request into a reviewed, simulated, and executable Flex protocol."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "opentrons"
+      description: "Upload, start, and monitor protocols on an Opentrons Flex robot."
+      transport: "stdio"
